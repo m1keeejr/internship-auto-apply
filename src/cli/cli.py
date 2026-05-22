@@ -9,6 +9,7 @@ from typing import Optional
 
 from src.profile.cv_manager import ProfileManager, CVProfile, Education, Experience
 from src.database.db_manager import ApplicationDatabase
+from src.scrapers.scraper_manager import search_internships
 
 
 class CLIInterface:
@@ -39,15 +40,20 @@ class CLIInterface:
         config_parser.add_argument('--education-university', type=str, help='University name')
         config_parser.add_argument('--education-year', type=int, help='Graduation year')
         
-        # Search command - search for internships (placeholder for now)
+        # Search command - search for internships
         search_parser = subparsers.add_parser('search', help='Search for internships')
         search_parser.add_argument('--country', type=str, default='Spain', help='Country to search in')
-        search_parser.add_argument('--city', type=str, help='City to search in')
+        search_parser.add_argument('--city', type=str, action='append', dest='cities', help='City to search in (can use multiple)')
         search_parser.add_argument('--role', type=str, help='Job title/position')
         search_parser.add_argument('--keywords', type=str, help='Keywords (comma-separated)')
         search_parser.add_argument('--exclude', type=str, help='Exclude keywords (comma-separated)')
         search_parser.add_argument('--level', choices=['entry', 'mid', 'senior'], help='Experience level')
+        search_parser.add_argument('--max-results', type=int, default=20, help='Max results per platform')
+        search_parser.add_argument('--platform', type=str, action='append', dest='platforms', 
+                                  choices=['linkedin', 'indeed', 'glassdoor'],
+                                  help='Specific platform to search (default: all)')
         search_parser.add_argument('--save-filter', type=str, help='Save this search as a filter')
+        search_parser.add_argument('--no-save-db', action='store_true', help='Do not save results to database')
         
         # Status command - view applications and stats
         status_parser = subparsers.add_parser('status', help='View application status and statistics')
@@ -145,20 +151,64 @@ class CLIInterface:
             print(f"✓ Education added: {education.degree} in {education.field}")
     
     def cmd_search(self, args):
-        """Search for internships (placeholder)"""
-        print("\n🔍 Searching for internships...")
-        print(f"  Country: {args.country}")
-        if args.city:
-            print(f"  City: {args.city}")
-        if args.role:
-            print(f"  Role: {args.role}")
-        if args.keywords:
-            print(f"  Keywords: {args.keywords}")
+        """Search for internships across multiple platforms"""
+        print("\n🔍 Starting internship search...\n")
         
-        print("\n⏳ Job board integration coming in Phase 2...")
-        print("  - LinkedIn scraper")
-        print("  - Indeed scraper")
-        print("  - Glassdoor scraper")
+        # Prepare search parameters
+        keywords = None
+        if args.role or args.keywords:
+            keywords = []
+            if args.role:
+                keywords.append(args.role)
+            if args.keywords:
+                keywords.extend([k.strip() for k in args.keywords.split(",")])
+        
+        exclude_keywords = None
+        if args.exclude:
+            exclude_keywords = [k.strip() for k in args.exclude.split(",")]
+        
+        cities = args.cities or []
+        platforms = args.platforms or ["linkedin", "indeed", "glassdoor"]
+        
+        try:
+            # Perform search across platforms
+            results = search_internships(
+                country=args.country,
+                cities=cities if cities else None,
+                keywords=keywords,
+                exclude_keywords=exclude_keywords,
+                max_results=args.max_results,
+                db_manager=self.db if not args.no_save_db else None,
+                platforms=platforms
+            )
+            
+            # Save filter if requested
+            if args.save_filter:
+                filter_config = {
+                    "name": args.save_filter,
+                    "country": args.country,
+                    "cities": cities,
+                    "positions": keywords or [],
+                    "keywords": keywords or [],
+                    "exclude_keywords": exclude_keywords or [],
+                    "experience_level": args.level
+                }
+                self.db.save_filter(filter_config)
+                print(f"\n✓ Filter '{args.save_filter}' saved")
+            
+            # Show status after search
+            print("\n📋 Recent pending applications:")
+            pending = self.db.get_pending_applications(limit=5)
+            if pending:
+                for app in pending:
+                    print(f"  [{app['id']}] {app['position']} @ {app['company']} ({app['location']})")
+            else:
+                print("  No pending applications")
+            
+        except Exception as e:
+            print(f"\n✗ Search failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
     
     def cmd_status(self, args):
         """View application status and statistics"""
@@ -175,6 +225,8 @@ class CLIInterface:
             print(f"\n📋 Pending Applications ({len(pending)}):")
             for app in pending:
                 print(f"  [{app['id']}] {app['position']} at {app['company']} ({app['location']}, {app['country']})")
+                if app['salary']:
+                    print(f"       Salary: {app['salary']}")
         else:
             print("\n✓ No pending applications")
     
