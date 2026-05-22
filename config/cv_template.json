@@ -1,0 +1,75 @@
+{
+  "name": "Michail Rimikis",
+  "email": "michail.rimikis@gmail.com",
+  "phone": "+34 635809700",
+  "location": "Barcelona",
+  "country": "Spain",
+  "summary": "Highly motivated Business Administration student at La Salle University Barcelona, specialising in Digital Marketing, with a current GPA of 8.25/10. Known for approaching challenges with enthusiasm and integrity, I bring hands-on experience in retail sales, customer service, and administrative support across international environments. I am passionate about my professional development and consistently strive to deliver high-quality results, looking to contribute my energy and dedication to a forward-thinking team.",
+  "education": [
+    {
+      "degree": "Bachelor",
+      "field": "Business Administration — Digital Marketing",
+      "university": "La Salle University Barcelona",
+      "graduation_year": 2027,
+      "grade": "8.25/10 GPA"
+    },
+    {
+      "degree": "Upper Secondary School (Apolytirio)",
+      "field": "General Studies — GCSE A-Level Mathematics",
+      "university": "Kessaris School",
+      "graduation_year": 2022,
+      "grade": "19.7/20"
+    }
+  ],
+  "experience": [
+    {
+      "company": "Coach New York",
+      "position": "Sales Associate",
+      "duration_months": 12,
+      "description": "Managed daily store operations including inventory management and visual merchandising to maximise sales potential. Exceeded sales targets through proactive customer engagement and effective cross-selling techniques in a high-volume retail environment.",
+      "skills": ["Retail Sales", "Inventory Management", "Visual Merchandising", "Customer Engagement", "Cross-Selling"],
+      "start_date": "2022-09",
+      "end_date": "2023-08"
+    },
+    {
+      "company": "Baila Beach Bar",
+      "position": "Waiter",
+      "duration_months": 12,
+      "description": "Delivered exceptional customer service in a fast-paced hospitality environment. Collaborated with kitchen and bar staff to coordinate orders and resolve customer inquiries, contributing to overall team efficiency and guest satisfaction.",
+      "skills": ["Customer Service", "Teamwork", "Communication", "Fast-Paced Environment"],
+      "start_date": "2020-06",
+      "end_date": "2021-09"
+    },
+    {
+      "company": "Robotics First Lego League",
+      "position": "Administrative Team Support",
+      "duration_months": 24,
+      "description": "Facilitated the transition of the event from a national to an international platform, handling complex administrative workflows. Supervised robotics course simulations, demonstrating leadership by overseeing technical protocols and mentoring competitive teams.",
+      "skills": ["Project Management", "Leadership", "Event Coordination", "Administration", "Mentoring"],
+      "start_date": "2019-09",
+      "end_date": "2021-09"
+    }
+  ],
+  "skills": [
+    "Digital Marketing",
+    "Project Management",
+    "Leadership",
+    "Retail Sales",
+    "Effective Communication",
+    "Critical Thinking",
+    "Teamwork",
+    "Computer Literate",
+    "Microsoft Office",
+    "Social Media Marketing",
+    "Customer Service"
+  ],
+  "languages": {
+    "English": "C2 Proficiency",
+    "Greek": "Native",
+    "Spanish": "B1",
+    "French": "A2"
+  },
+  "linkedin_url": null,
+  "github_url": null,
+  "portfolio_url": null
+}
