@@ -11,6 +11,8 @@ from src.profile.cv_manager import ProfileManager, CVProfile, Education, Experie
 from src.database.db_manager import ApplicationDatabase
 from src.scrapers.scraper_manager import search_internships
 from src.filters.filter_engine import FilterEngine, apply_filters
+# ApplyManager imported lazily inside cmd_apply / cmd_batch_apply to avoid
+# requiring selenium when only running search/filter/status commands.
 
 
 class CLIInterface:
@@ -82,10 +84,32 @@ class CLIInterface:
         status_parser.add_argument('--filter', type=str, help='Filter by status (pending, submitted, etc.)')
         status_parser.add_argument('--limit', type=int, default=10, help='Limit number of results')
         
-        # Submit command - submit pending application
-        submit_parser = subparsers.add_parser('submit', help='Submit a pending application')
+        # Submit command - manually mark application as submitted
+        submit_parser = subparsers.add_parser('submit', help='Manually mark an application as submitted')
         submit_parser.add_argument('app_id', type=int, help='Application ID to submit')
-        
+
+        # Apply command - auto-fill and submit an application
+        apply_parser = subparsers.add_parser('apply', help='Auto-fill and submit a job application')
+        apply_parser.add_argument('app_id', type=int, help='Application ID to apply to')
+        apply_parser.add_argument('--submit', action='store_true', help='Actually submit (default: dry-run review only)')
+        apply_parser.add_argument('--resume', type=str, help='Path to resume PDF file')
+        apply_parser.add_argument('--cover-letter', type=str, help='Custom cover letter text or path to .txt file')
+        apply_parser.add_argument('--tone', choices=['professional', 'enthusiastic', 'concise'],
+                                  default='professional', help='Cover letter tone (default: professional)')
+        apply_parser.add_argument('--no-cover-letter', action='store_true', help='Skip cover letter generation')
+        apply_parser.add_argument('--headless', action='store_true', help='Run browser in headless mode')
+        apply_parser.add_argument('--preview-letter', action='store_true', help='Preview cover letter and exit')
+
+        # Batch apply command
+        batch_parser = subparsers.add_parser('batch-apply', help='Apply to multiple pending jobs')
+        batch_parser.add_argument('--limit', type=int, default=5, help='Max jobs to apply to')
+        batch_parser.add_argument('--submit', action='store_true', help='Actually submit (default: dry-run)')
+        batch_parser.add_argument('--resume', type=str, help='Path to resume PDF file')
+        batch_parser.add_argument('--tone', choices=['professional', 'enthusiastic', 'concise'],
+                                  default='professional', help='Cover letter tone')
+        batch_parser.add_argument('--delay', type=float, default=5.0, help='Seconds between applications')
+        batch_parser.add_argument('--headless', action='store_true', help='Run browser in headless mode')
+
         return parser
     
     def run(self, args: Optional[list] = None):
@@ -96,8 +120,9 @@ class CLIInterface:
             self.parser.print_help()
             return
         
-        # Route to appropriate command handler
-        command_method = getattr(self, f'cmd_{parsed_args.command}', None)
+        # Route to appropriate command handler (normalise hyphens to underscores)
+        method_name = f'cmd_{parsed_args.command.replace("-", "_")}'
+        command_method = getattr(self, method_name, None)
         if command_method:
             command_method(parsed_args)
         else:
@@ -340,14 +365,153 @@ class CLIInterface:
             print("\n✓ No pending applications")
     
     def cmd_submit(self, args):
-        """Submit a pending application"""
-        print(f"\n📤 Submitting application ID {args.app_id}...")
-        
+        """Manually mark a pending application as submitted"""
+        print(f"\n📤 Marking application ID {args.app_id} as submitted...")
+
         success = self.db.update_application_status(args.app_id, 'submitted', 'Submitted via CLI')
         if success:
             print(f"✓ Application {args.app_id} marked as submitted")
         else:
             print(f"✗ Application {args.app_id} not found")
+
+    def cmd_apply(self, args):
+        """Auto-fill and optionally submit a job application"""
+        dry_run = not args.submit
+        mode = "REVIEW (dry-run)" if dry_run else "SUBMIT"
+        print(f"\n🤖 Auto-Apply — mode: {mode}")
+        print(f"   Application ID: {args.app_id}\n")
+
+        # Resolve resume path
+        resume_path = None
+        if args.resume:
+            resume_path = Path(args.resume)
+            if not resume_path.exists():
+                print(f"✗ Resume not found: {resume_path}")
+                return
+
+        # Resolve cover letter
+        cover_letter = None
+        if args.cover_letter:
+            p = Path(args.cover_letter)
+            if p.exists():
+                cover_letter = p.read_text(encoding="utf-8")
+            else:
+                cover_letter = args.cover_letter
+
+        from src.forms.apply_manager import ApplyManager
+        manager = ApplyManager(
+            db=self.db,
+            profile_manager=self.profile_manager,
+            resume_path=resume_path,
+            headless=args.headless,
+        )
+
+        try:
+            # Cover letter preview-only mode
+            if args.preview_letter:
+                manager.preview_cover_letter(args.app_id, tone=args.tone)
+                return
+
+            result = manager.apply_to_job(
+                app_id=args.app_id,
+                dry_run=dry_run,
+                cover_letter=cover_letter,
+                cover_letter_tone=args.tone,
+                generate_cover_letter=not args.no_cover_letter,
+            )
+
+            self._print_apply_result(result)
+
+        finally:
+            manager.close()
+
+    def cmd_batch_apply(self, args):
+        """Apply to multiple pending jobs"""
+        dry_run = not args.submit
+        mode = "REVIEW (dry-run)" if dry_run else "SUBMIT"
+        print(f"\n🤖 Batch Apply — mode: {mode}, limit: {args.limit}\n")
+
+        resume_path = Path(args.resume) if args.resume else None
+        if resume_path and not resume_path.exists():
+            print(f"✗ Resume not found: {resume_path}")
+            return
+
+        pending = self.db.get_pending_applications(limit=args.limit)
+        if not pending:
+            print("No pending applications found.")
+            return
+
+        app_ids = [a["id"] for a in pending]
+        print(f"Found {len(app_ids)} pending applications:\n")
+        for app in pending:
+            print(f"  [{app['id']}] {app['position']} @ {app['company']}")
+        print()
+
+        from src.forms.apply_manager import ApplyManager
+        manager = ApplyManager(
+            db=self.db,
+            profile_manager=self.profile_manager,
+            resume_path=resume_path,
+            headless=args.headless,
+        )
+
+        try:
+            results = manager.apply_batch(
+                app_ids=app_ids,
+                dry_run=dry_run,
+                delay_seconds=args.delay,
+                cover_letter_tone=args.tone,
+            )
+
+            print(f"\n{'='*60}")
+            print("Batch Apply Summary")
+            print(f"{'='*60}")
+            for result in results:
+                status_icon = {"submitted": "✓", "dry_run_complete": "○", "error": "✗", "no_easy_apply": "~"}.get(result["status"], "?")
+                print(f"  {status_icon} [{result['app_id']}] {result['status']} — {len(result['fields_filled'])} fields filled")
+                if result["errors"]:
+                    for err in result["errors"][:2]:
+                        print(f"      ⚠ {err}")
+
+        finally:
+            manager.close()
+
+    @staticmethod
+    def _print_apply_result(result: dict):
+        """Pretty-print the result of an apply attempt."""
+        status = result.get("status", "unknown")
+        icons = {
+            "submitted": "✅",
+            "dry_run_complete": "👀",
+            "no_easy_apply": "⚠️",
+            "login_required": "🔐",
+            "error": "❌",
+            "not_found": "❌",
+        }
+        print(f"{icons.get(status, '?')} Status: {status.upper()}")
+
+        if result.get("message"):
+            print(f"   {result['message']}")
+
+        if result["fields_filled"]:
+            print(f"\n✓ Fields filled ({len(result['fields_filled'])}):")
+            for f in result["fields_filled"]:
+                print(f"   • {f}")
+
+        if result["fields_skipped"]:
+            print(f"\n○ Fields skipped ({len(result['fields_skipped'])}):")
+            for f in result["fields_skipped"][:5]:
+                print(f"   • {f}")
+            if len(result["fields_skipped"]) > 5:
+                print(f"   ... and {len(result['fields_skipped']) - 5} more")
+
+        if result["errors"]:
+            print(f"\n⚠ Errors ({len(result['errors'])}):")
+            for e in result["errors"]:
+                print(f"   • {e}")
+
+        if status == "dry_run_complete":
+            print(f"\n💡 To actually submit: python src/main.py apply {result['app_id']} --submit")
 
 
 def main():
