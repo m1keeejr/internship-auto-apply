@@ -1,6 +1,6 @@
 """
-Unified scraper manager
-Orchestrates multiple job board scrapers
+Unified scraper manager with job parsing and filtering
+Orchestrates multiple job board scrapers with advanced filtering
 """
 import logging
 from typing import List, Dict, Optional, Any
@@ -10,13 +10,15 @@ import time
 from src.scrapers.linkedin_scraper import LinkedInScraper
 from src.scrapers.indeed_scraper import IndeedScraper
 from src.scrapers.glassdoor_scraper import GlassdoorScraper
+from src.filters.job_parser import JobRequirementsParser
+from src.filters.filter_engine import FilterEngine, FilterCriteria
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
 class ScraperManager:
-    """Manages and orchestrates multiple job board scrapers"""
+    """Manages and orchestrates multiple job board scrapers with filtering"""
     
     def __init__(self, db_manager=None):
         """
@@ -29,6 +31,8 @@ class ScraperManager:
         self.linkedin = LinkedInScraper(headless=True)
         self.indeed = IndeedScraper()
         self.glassdoor = GlassdoorScraper()
+        self.parser = JobRequirementsParser()
+        self.filter_engine = FilterEngine()
     
     def search_all_platforms(
         self,
@@ -38,7 +42,8 @@ class ScraperManager:
         exclude_keywords: Optional[List[str]] = None,
         max_results_per_platform: int = 20,
         platforms: Optional[List[str]] = None,
-        use_threads: bool = True
+        use_threads: bool = True,
+        filter_criteria: Optional[FilterCriteria] = None
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
         Search all job platforms for internships
@@ -51,6 +56,7 @@ class ScraperManager:
             max_results_per_platform: Max results per platform
             platforms: Specific platforms to search (default: all)
             use_threads: Use threading for parallel searches
+            filter_criteria: Optional FilterCriteria for applying filters
         
         Returns:
             Dictionary with results by platform
@@ -67,12 +73,12 @@ class ScraperManager:
         if use_threads:
             results = self._search_parallel(
                 country, cities, keywords, exclude_keywords,
-                max_results_per_platform, platforms
+                max_results_per_platform, platforms, filter_criteria
             )
         else:
             results = self._search_sequential(
                 country, cities, keywords, exclude_keywords,
-                max_results_per_platform, platforms
+                max_results_per_platform, platforms, filter_criteria
             )
         
         return results
@@ -84,7 +90,8 @@ class ScraperManager:
         keywords: Optional[List[str]],
         exclude_keywords: Optional[List[str]],
         max_results: int,
-        platforms: List[str]
+        platforms: List[str],
+        filter_criteria: Optional[FilterCriteria] = None
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Search multiple platforms in parallel"""
         results = {}
@@ -139,13 +146,9 @@ class ScraperManager:
                 platform, jobs = future.result()
                 results[platform] = jobs
                 
-                # Save to database if available
+                # Save to database with parsed metadata
                 if self.db_manager and jobs:
-                    count = 0
-                    for job in jobs:
-                        app_id = self.db_manager.add_application(job)
-                        if app_id:
-                            count += 1
+                    count = self._save_jobs_to_db(jobs)
                     logger.info(f"  ✓ Saved {count} jobs from {platform} to database")
         
         return results
@@ -157,7 +160,8 @@ class ScraperManager:
         keywords: Optional[List[str]],
         exclude_keywords: Optional[List[str]],
         max_results: int,
-        platforms: List[str]
+        platforms: List[str],
+        filter_criteria: Optional[FilterCriteria] = None
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Search platforms sequentially"""
         results = {}
@@ -198,13 +202,9 @@ class ScraperManager:
                 results[platform] = jobs
                 logger.info(f"  ✓ {platform.upper()}: {len(jobs)} results")
                 
-                # Save to database
+                # Save to database with parsed metadata
                 if self.db_manager and jobs:
-                    count = 0
-                    for job in jobs:
-                        app_id = self.db_manager.add_application(job)
-                        if app_id:
-                            count += 1
+                    count = self._save_jobs_to_db(jobs)
                     logger.info(f"    → Saved {count} jobs to database")
                 
                 time.sleep(2)  # Rate limiting between platforms
@@ -214,6 +214,40 @@ class ScraperManager:
                 results[platform] = []
         
         return results
+    
+    def _save_jobs_to_db(self, jobs: List[Dict[str, Any]]) -> int:
+        """Save jobs to database with extracted metadata"""
+        count = 0
+        for job in jobs:
+            try:
+                # Parse job to extract requirements
+                requirements = self.parser.parse_job(job)
+                
+                # Prepare extracted data for database
+                extracted_data = {
+                    'languages': ', '.join(requirements.languages) if requirements.languages else '',
+                    'required_languages': ', '.join(requirements.languages) if requirements.languages else '',
+                    'hours_per_week': requirements.hours_per_week,
+                    'hours_type': requirements.hours_type,
+                    'remote_type': requirements.remote_type,
+                    'employment_type': requirements.employment_type,
+                    'experience_level': requirements.experience_level,
+                    'is_paid': requirements.is_paid,
+                    'duration_months': requirements.duration_months,
+                    'skills_required': ', '.join(requirements.skills_required) if requirements.skills_required else ''
+                }
+                
+                app_id = self.db_manager.add_application(job, extracted_data)
+                if app_id:
+                    count += 1
+            except Exception as e:
+                logger.warning(f"Error parsing/saving job {job.get('job_id', 'unknown')}: {str(e)}")
+                # Still save without extracted data
+                app_id = self.db_manager.add_application(job)
+                if app_id:
+                    count += 1
+        
+        return count
     
     def get_summary(self, results: Dict[str, List[Dict[str, Any]]]) -> str:
         """Generate summary of search results"""
@@ -245,7 +279,10 @@ def search_internships(
     exclude_keywords: Optional[List[str]] = None,
     max_results: int = 20,
     db_manager=None,
-    platforms: Optional[List[str]] = None
+    platforms: Optional[List[str]] = None,
+    required_languages: Optional[List[str]] = None,
+    remote_preference: Optional[str] = None,
+    match_threshold: int = 50
 ) -> Dict[str, List[Dict[str, Any]]]:
     """
     Main function to search internships across all platforms
@@ -258,6 +295,9 @@ def search_internships(
         max_results: Max results per platform
         db_manager: Database manager
         platforms: Which platforms to search
+        required_languages: Required languages
+        remote_preference: Remote work preference
+        match_threshold: Minimum match score for filtering
     
     Returns:
         Results by platform
