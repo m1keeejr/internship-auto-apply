@@ -1,0 +1,1 @@
+"""Internship automation tool main package"""

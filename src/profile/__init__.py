@@ -1,0 +1,1 @@
+"""Profile module for CV management"""
