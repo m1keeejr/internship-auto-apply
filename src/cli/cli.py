@@ -1,5 +1,5 @@
 """
-CLI interface for internship automation tool
+CLI interface for internship automation tool with filtering support
 """
 import argparse
 import sys
@@ -10,6 +10,7 @@ from typing import Optional
 from src.profile.cv_manager import ProfileManager, CVProfile, Education, Experience
 from src.database.db_manager import ApplicationDatabase
 from src.scrapers.scraper_manager import search_internships
+from src.filters.filter_engine import FilterEngine, apply_filters
 
 
 class CLIInterface:
@@ -18,6 +19,7 @@ class CLIInterface:
     def __init__(self):
         self.profile_manager = ProfileManager()
         self.db = ApplicationDatabase()
+        self.filter_engine = FilterEngine()
         self.parser = self._create_parser()
     
     def _create_parser(self) -> argparse.ArgumentParser:
@@ -47,6 +49,11 @@ class CLIInterface:
         search_parser.add_argument('--role', type=str, help='Job title/position')
         search_parser.add_argument('--keywords', type=str, help='Keywords (comma-separated)')
         search_parser.add_argument('--exclude', type=str, help='Exclude keywords (comma-separated)')
+        search_parser.add_argument('--languages', type=str, help='Required languages (comma-separated)')
+        search_parser.add_argument('--min-hours', type=int, help='Minimum hours per week')
+        search_parser.add_argument('--max-hours', type=int, help='Maximum hours per week')
+        search_parser.add_argument('--remote', choices=['remote', 'hybrid', 'on-site'], help='Remote preference')
+        search_parser.add_argument('--paid', action='store_true', help='Only paid internships')
         search_parser.add_argument('--level', choices=['entry', 'mid', 'senior'], help='Experience level')
         search_parser.add_argument('--max-results', type=int, default=20, help='Max results per platform')
         search_parser.add_argument('--platform', type=str, action='append', dest='platforms', 
@@ -54,6 +61,21 @@ class CLIInterface:
                                   help='Specific platform to search (default: all)')
         search_parser.add_argument('--save-filter', type=str, help='Save this search as a filter')
         search_parser.add_argument('--no-save-db', action='store_true', help='Do not save results to database')
+        search_parser.add_argument('--threshold', type=int, default=50, help='Match score threshold (0-100)')
+        search_parser.add_argument('--apply-filter', action='store_true', help='Apply advanced filtering')
+        
+        # Filter command - apply filters to existing jobs
+        filter_parser = subparsers.add_parser('filter', help='Apply filters to job database')
+        filter_parser.add_argument('--country', type=str, help='Filter by country')
+        filter_parser.add_argument('--city', type=str, action='append', dest='cities', help='Filter by city')
+        filter_parser.add_argument('--languages', type=str, help='Required languages (comma-separated)')
+        filter_parser.add_argument('--remote', choices=['remote', 'hybrid', 'on-site'], help='Remote type')
+        filter_parser.add_argument('--paid', action='store_true', help='Only paid internships')
+        filter_parser.add_argument('--min-hours', type=int, help='Minimum hours per week')
+        filter_parser.add_argument('--max-hours', type=int, help='Maximum hours per week')
+        filter_parser.add_argument('--threshold', type=int, default=50, help='Match score threshold')
+        filter_parser.add_argument('--limit', type=int, default=20, help='Limit results')
+        filter_parser.add_argument('--sort', choices=['score', 'company', 'date'], default='score', help='Sort by')
         
         # Status command - view applications and stats
         status_parser = subparsers.add_parser('status', help='View application status and statistics')
@@ -105,7 +127,8 @@ class CLIInterface:
         print("\nNext steps:")
         print("  1. Edit your CV: config/cv_template.json")
         print("  2. Search for internships: python src/main.py search --country Spain --role 'Developer'")
-        print("  3. View applications: python src/main.py status")
+        print("  3. Filter results: python src/main.py filter --languages English --remote hybrid")
+        print("  4. View applications: python src/main.py status")
     
     def cmd_config(self, args):
         """Manage CV and filter configurations"""
@@ -184,6 +207,7 @@ class CLIInterface:
             
             # Save filter if requested
             if args.save_filter:
+                languages = [l.strip() for l in args.languages.split(",")] if args.languages else []
                 filter_config = {
                     "name": args.save_filter,
                     "country": args.country,
@@ -191,22 +215,102 @@ class CLIInterface:
                     "positions": keywords or [],
                     "keywords": keywords or [],
                     "exclude_keywords": exclude_keywords or [],
-                    "experience_level": args.level
+                    "required_languages": languages,
+                    "remote_type": args.remote,
+                    "paid_only": args.paid,
+                    "experience_level": args.level,
+                    "match_threshold": args.threshold
                 }
                 self.db.save_filter(filter_config)
                 print(f"\n✓ Filter '{args.save_filter}' saved")
             
-            # Show status after search
-            print("\n📋 Recent pending applications:")
-            pending = self.db.get_pending_applications(limit=5)
-            if pending:
-                for app in pending:
-                    print(f"  [{app['id']}] {app['position']} @ {app['company']} ({app['location']})")
+            # Optionally apply filtering
+            if args.apply_filter:
+                print("\n📊 Applying advanced filters...")
+                pending = self.db.get_pending_applications(limit=1000)
+                
+                languages = [l.strip() for l in args.languages.split(",")] if args.languages else ["English", "Spanish"]
+                
+                matches = apply_filters(
+                    pending,
+                    countries=[args.country],
+                    cities=cities if cities else None,
+                    required_languages=languages,
+                    remote_preference=args.remote,
+                    exclude_keywords=exclude_keywords,
+                    match_threshold=args.threshold
+                )
+                
+                print(f"\n✓ Found {len(matches)} matching internships:\n")
+                for match in matches[:10]:
+                    print(f"  [{match.match_score}%] {match.job_title} @ {match.company}")
+                    print(f"      {', '.join(match.matched_criteria)}")
             else:
-                print("  No pending applications")
+                # Show status after search
+                print("\n📋 Recent pending applications:")
+                pending = self.db.get_pending_applications(limit=5)
+                if pending:
+                    for app in pending:
+                        print(f"  [{app['id']}] {app['position']} @ {app['company']} ({app['location']})")
+                else:
+                    print("  No pending applications")
             
         except Exception as e:
             print(f"\n✗ Search failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    
+    def cmd_filter(self, args):
+        """Apply advanced filters to database"""
+        print("\n🔍 Applying filters to job database...\n")
+        
+        try:
+            # Get all pending jobs from database
+            pending = self.db.get_pending_applications(limit=1000)
+            print(f"Found {len(pending)} pending jobs to filter")
+            
+            # Prepare filter criteria
+            languages = [l.strip() for l in args.languages.split(",")] if args.languages else ["English", "Spanish"]
+            
+            # Apply filters
+            matches = apply_filters(
+                pending,
+                countries=[args.country] if args.country else ["Spain"],
+                cities=args.cities,
+                required_languages=languages,
+                remote_preference=args.remote,
+                match_threshold=args.threshold
+            )
+            
+            print(f"\n✓ Found {len(matches)} matching internships\n")
+            print("📋 Top Matches:")
+            print("="*80)
+            
+            # Sort results
+            if args.sort == 'company':
+                matches.sort(key=lambda x: x.company)
+            elif args.sort == 'date':
+                matches.sort(key=lambda x: x.job_id, reverse=True)
+            # Default sort is by score (already sorted)
+            
+            # Display results
+            for i, match in enumerate(matches[:args.limit], 1):
+                print(f"\n[{i}] [{match.match_score}%] {match.job_title}")
+                print(f"    Company: {match.company}")
+                print(f"    Match: {', '.join(match.matched_criteria)}")
+                
+                # Show language info
+                if match.job_requirements.languages:
+                    print(f"    Languages: {', '.join(match.job_requirements.languages)}")
+                if match.job_requirements.hours_per_week:
+                    print(f"    Hours: {match.job_requirements.hours_per_week}h/week ({match.job_requirements.hours_type})")
+                if match.job_requirements.remote_type != "unknown":
+                    print(f"    Remote: {match.job_requirements.remote_type}")
+                if match.notes:
+                    print(f"    Notes: {match.notes}")
+            
+        except Exception as e:
+            print(f"\n✗ Filtering failed: {str(e)}")
             import traceback
             traceback.print_exc()
     
@@ -224,9 +328,14 @@ class CLIInterface:
         if pending:
             print(f"\n📋 Pending Applications ({len(pending)}):")
             for app in pending:
-                print(f"  [{app['id']}] {app['position']} at {app['company']} ({app['location']}, {app['country']})")
-                if app['salary']:
-                    print(f"       Salary: {app['salary']}")
+                print(f"  [{app['id']}] {app['position']} at {app['company']}")
+                print(f"       Location: {app['location']}, {app['country']}")
+                if app['languages']:
+                    print(f"       Languages: {app['languages']}")
+                if app['hours_per_week']:
+                    print(f"       Hours: {app['hours_per_week']}h/week")
+                if app['remote_type']:
+                    print(f"       Remote: {app['remote_type']}")
         else:
             print("\n✓ No pending applications")
     
